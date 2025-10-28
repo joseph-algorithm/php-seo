@@ -4,8 +4,7 @@ declare(strict_types=1);
 
 namespace Rumenx\PhpSeo\Providers;
 
-use Rumenx\PhpSeo\Config\SeoConfig;
-use Rumenx\PhpSeo\Contracts\ProviderInterface;
+use Rumenx\PhpSeo\Exceptions\ProviderException;
 
 /**
  * OpenAI provider for AI-powered SEO generation.
@@ -13,21 +12,8 @@ use Rumenx\PhpSeo\Contracts\ProviderInterface;
  * This provider integrates with OpenAI's API to generate SEO content
  * using GPT models for titles, descriptions, and meta tags.
  */
-class OpenAiProvider implements ProviderInterface
+class OpenAiProvider extends AbstractProvider
 {
-    private SeoConfig $config;
-    private ?string $apiKey;
-    private string $model;
-    private string $baseUrl;
-
-    public function __construct(SeoConfig $config)
-    {
-        $this->config = $config;
-        $this->apiKey = $config->get('providers.openai.api_key');
-        $this->model = $config->get('providers.openai.model', 'gpt-3.5-turbo');
-        $this->baseUrl = $config->get('providers.openai.base_url', 'https://api.openai.com/v1');
-    }
-
     /**
      * {@inheritdoc}
      */
@@ -38,34 +24,16 @@ class OpenAiProvider implements ProviderInterface
         }
 
         try {
-            $response = $this->makeRequest([
-                'model' => $this->model,
-                'messages' => [
-                    [
-                        'role' => 'system',
-                        'content' => $options['system_message'] ?? 'You are an SEO expert. Generate high-quality, optimized content.',
-                    ],
-                    [
-                        'role' => 'user',
-                        'content' => $prompt,
-                    ],
-                ],
-                'max_tokens' => $options['max_tokens'] ?? 150,
-                'temperature' => $options['temperature'] ?? 0.7,
-            ]);
+            $data = $this->formatRequest($prompt, $options);
+            $headers = $this->buildHeaders();
+            $response = $this->makeHttpRequest('/chat/completions', $data, $headers);
 
-            return $this->extractTextFromResponse($response);
+            return $this->parseResponse($response);
+        } catch (ProviderException $e) {
+            throw new \RuntimeException("Failed to generate content: {$e->getMessage()}", 0, $e);
         } catch (\Exception $e) {
             throw new \RuntimeException("Failed to generate content: {$e->getMessage()}", 0, $e);
         }
-    }
-
-    /**
-     * {@inheritdoc}
-     */
-    public function isAvailable(): bool
-    {
-        return !empty($this->apiKey);
     }
 
     /**
@@ -109,6 +77,69 @@ class OpenAiProvider implements ProviderInterface
     /**
      * {@inheritdoc}
      */
+    protected function getDefaultModel(): string
+    {
+        return 'gpt-3.5-turbo';
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    protected function getDefaultBaseUrl(): string
+    {
+        return 'https://api.openai.com/v1';
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    protected function buildHeaders(): array
+    {
+        return [
+            'Authorization: Bearer ' . $this->apiKey,
+        ];
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    protected function formatRequest(string $prompt, array $options): array
+    {
+        return [
+            'model' => $this->model,
+            'messages' => [
+                [
+                    'role' => 'system',
+                    'content' => $options['system_message'] ?? 'You are an SEO expert. Generate high-quality, optimized content.',
+                ],
+                [
+                    'role' => 'user',
+                    'content' => $prompt,
+                ],
+            ],
+            'max_tokens' => $options['max_tokens'] ?? 150,
+            'temperature' => $options['temperature'] ?? 0.7,
+        ];
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    protected function parseResponse(array $response): string
+    {
+        if (!isset($response['choices'][0]['message']['content'])) {
+            throw ProviderException::apiError(
+                $this->getName(),
+                'Invalid response structure: missing content'
+            );
+        }
+
+        return trim($response['choices'][0]['message']['content']);
+    }
+
+    /**
+     * {@inheritdoc}
+     */
     public function generateTitle(array $analysis, array $options = []): string
     {
         if (!$this->isAvailable()) {
@@ -118,24 +149,15 @@ class OpenAiProvider implements ProviderInterface
         $prompt = $this->buildTitlePrompt($analysis, $options);
 
         try {
-            $response = $this->makeRequest([
-                'model' => $this->model,
-                'messages' => [
-                    [
-                        'role' => 'system',
-                        'content' => 'You are an SEO expert. Generate concise, compelling page titles that are optimized for search engines. ' .
-                                   'Follow best practices: keep titles under 60 characters, include relevant keywords, and make them engaging for users.',
-                    ],
-                    [
-                        'role' => 'user',
-                        'content' => $prompt,
-                    ],
-                ],
+            $data = $this->formatRequest($prompt, [
+                'system_message' => 'You are an SEO expert. Generate concise, compelling page titles.',
                 'max_tokens' => 100,
                 'temperature' => 0.7,
             ]);
+            $headers = $this->buildHeaders();
+            $response = $this->makeHttpRequest('/chat/completions', $data, $headers);
 
-            return $this->extractTextFromResponse($response);
+            return $this->parseResponse($response);
         } catch (\Exception $e) {
             if ($this->config->get('ai.fallback_enabled', true)) {
                 return $this->generateFallbackTitle($analysis);
@@ -157,25 +179,15 @@ class OpenAiProvider implements ProviderInterface
         $prompt = $this->buildDescriptionPrompt($analysis, $options);
 
         try {
-            $response = $this->makeRequest([
-                'model' => $this->model,
-                'messages' => [
-                    [
-                        'role' => 'system',
-                        'content' => 'You are an SEO expert. Generate compelling meta descriptions that are optimized for search engines. ' .
-                                   'Follow best practices: keep descriptions between 150-160 characters, include relevant keywords naturally, ' .
-                                   'and create engaging copy that encourages clicks.',
-                    ],
-                    [
-                        'role' => 'user',
-                        'content' => $prompt,
-                    ],
-                ],
+            $data = $this->formatRequest($prompt, [
+                'system_message' => 'You are an SEO expert. Generate compelling meta descriptions.',
                 'max_tokens' => 150,
                 'temperature' => 0.7,
             ]);
+            $headers = $this->buildHeaders();
+            $response = $this->makeHttpRequest('/chat/completions', $data, $headers);
 
-            return $this->extractTextFromResponse($response);
+            return $this->parseResponse($response);
         } catch (\Exception $e) {
             if ($this->config->get('ai.fallback_enabled', true)) {
                 return $this->generateFallbackDescription($analysis);
@@ -197,26 +209,18 @@ class OpenAiProvider implements ProviderInterface
         $prompt = $this->buildKeywordsPrompt($analysis, $options);
 
         try {
-            $response = $this->makeRequest([
-                'model' => $this->model,
-                'messages' => [
-                    [
-                        'role' => 'system',
-                        'content' => 'You are an SEO expert. Generate relevant keywords for the given content. Return keywords as a comma-separated list. ' .
-                                   'Focus on terms that users would search for to find this content.',
-                    ],
-                    [
-                        'role' => 'user',
-                        'content' => $prompt,
-                    ],
-                ],
+            $data = $this->formatRequest($prompt, [
+                'system_message' => 'You are an SEO expert. Generate relevant keywords.',
                 'max_tokens' => 100,
                 'temperature' => 0.5,
             ]);
+            $headers = $this->buildHeaders();
+            $response = $this->makeHttpRequest('/chat/completions', $data, $headers);
 
-            $keywordsText = $this->extractTextFromResponse($response);
+            $content = $this->parseResponse($response);
+            $keywords = array_map('trim', explode(',', $content));
 
-            return array_map('trim', explode(',', $keywordsText));
+            return array_filter($keywords);
         } catch (\Exception $e) {
             if ($this->config->get('ai.fallback_enabled', true)) {
                 return $analysis['keywords'] ?? [];
@@ -313,71 +317,6 @@ class OpenAiProvider implements ProviderInterface
         $prompt .= "\nGenerate up to {$maxKeywords} relevant keywords as a comma-separated list.";
 
         return $prompt;
-    }
-
-    /**
-     * Make a request to the OpenAI API.
-     *
-     * @param array<string, mixed> $data
-     * @return array<string, mixed>
-     * @throws \RuntimeException
-     */
-    private function makeRequest(array $data): array
-    {
-        $ch = curl_init();
-
-        curl_setopt_array($ch, [
-            CURLOPT_URL => $this->baseUrl . '/chat/completions',
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => json_encode($data),
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/json',
-                'Authorization: Bearer ' . $this->apiKey,
-            ],
-            CURLOPT_TIMEOUT => $this->config->get('providers.openai.timeout', 30),
-        ]);
-
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $error = curl_error($ch);
-
-        curl_close($ch);
-
-        if ($error !== '') {
-            throw new \RuntimeException("cURL error: {$error}");
-        }
-
-        if ($httpCode !== 200) {
-            throw new \RuntimeException("HTTP error {$httpCode}: {$response}");
-        }
-
-        $decoded = json_decode($response, true);
-
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            throw new \RuntimeException('Invalid JSON response from OpenAI API');
-        }
-
-        if (isset($decoded['error'])) {
-            throw new \RuntimeException("OpenAI API error: {$decoded['error']['message']}");
-        }
-
-        return $decoded;
-    }
-
-    /**
-     * Extract text from OpenAI API response.
-     *
-     * @param array<string, mixed> $response
-     * @return string
-     */
-    private function extractTextFromResponse(array $response): string
-    {
-        if (!isset($response['choices'][0]['message']['content'])) {
-            throw new \RuntimeException('Invalid response format from OpenAI API');
-        }
-
-        return trim($response['choices'][0]['message']['content']);
     }
 
     /**
